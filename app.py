@@ -1,4 +1,3 @@
-
 import json
 import time
 
@@ -14,24 +13,21 @@ from prompts import (
 )
 
 
-# ---------------------------------------------------------
-# Streamlit configuration
-# ---------------------------------------------------------
+# ============================================================
+# STREAMLIT CONFIG
+# ============================================================
 
 st.set_page_config(
     page_title="MacroSnap",
     page_icon="🥗",
+    layout="centered",
 )
 
 
-# ---------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------
+# ============================================================
+# SECRETS / CONFIGURATION
+# ============================================================
 
-# Current stable Flash model recommended by Google.
-MODEL_NAME = "gemini-3.8-flash"
-
-# Read secrets from Streamlit Cloud / .streamlit/secrets.toml
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 
 TWILIO_ACCOUNT_SID = st.secrets["TWILIO_ACCOUNT_SID"]
@@ -40,17 +36,35 @@ TWILIO_WHATSAPP_FROM = st.secrets["TWILIO_WHATSAPP_FROM"]
 TWILIO_CONTENT_SID = st.secrets["TWILIO_CONTENT_SID"]
 
 
-# ---------------------------------------------------------
-# Clients
-# ---------------------------------------------------------
+# ============================================================
+# GEMINI MODEL
+# ============================================================
+
+MODEL_NAME = "gemini-2.5-flash"
+
+
+# ============================================================
+# CLIENT INITIALIZATION
+# ============================================================
 
 @st.cache_resource
 def get_gemini_client():
-    return genai.Client(api_key=GEMINI_API_KEY)
+    """
+    Creates and caches the Gemini client.
+
+    @st.cache_resource prevents Streamlit from creating
+    a new Gemini client on every rerun.
+    """
+    return genai.Client(
+        api_key=GEMINI_API_KEY
+    )
 
 
 @st.cache_resource
 def get_twilio_client():
+    """
+    Creates and caches the Twilio client.
+    """
     return TwilioClient(
         TWILIO_ACCOUNT_SID,
         TWILIO_AUTH_TOKEN,
@@ -61,21 +75,55 @@ gemini_client = get_gemini_client()
 twilio_client = get_twilio_client()
 
 
-# ---------------------------------------------------------
-# UI helpers
-# ---------------------------------------------------------
+# ============================================================
+# CREATE GEMINI CHAT
+# ============================================================
+
+def create_gemini_chat():
+    """
+    Creates a Gemini chat session with the application's
+    system instructions.
+    """
+
+    return gemini_client.chats.create(
+        model=MODEL_NAME,
+        config=types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT
+        ),
+    )
+
+
+# ============================================================
+# MESSAGE RENDERING
+# ============================================================
 
 def render_message(message):
+    """
+    Displays a single message in the Streamlit chat UI.
+    """
+
     with st.chat_message(message["role"]):
 
         if message["kind"] == "text":
             st.write(message["content"])
 
         elif message["kind"] == "image":
-            st.image(message["content"])
+            st.image(
+                message["content"],
+                use_container_width=True,
+            )
 
+
+# ============================================================
+# ADD MESSAGE
+# ============================================================
 
 def add_message(role, kind, content):
+    """
+    Adds a message to session state and immediately
+    renders it.
+    """
+
     st.session_state.messages.append(
         {
             "role": role,
@@ -84,91 +132,171 @@ def add_message(role, kind, content):
         }
     )
 
-    render_message(st.session_state.messages[-1])
+    render_message(
+        st.session_state.messages[-1]
+    )
 
 
-# ---------------------------------------------------------
-# Gemini
-# ---------------------------------------------------------
+# ============================================================
+# GEMINI REQUEST
+# ============================================================
 
 def ask_gemini(parts):
     """
     Sends a request to Gemini.
 
-    Retries temporary 503 / UNAVAILABLE errors
-    before returning an error message.
+    Handles temporary 503 and 429 errors using
+    exponential backoff.
+
+    Retry sequence:
+
+        Attempt 1
+        ↓
+        wait 2 seconds
+        ↓
+        Attempt 2
+        ↓
+        wait 4 seconds
+        ↓
+        Attempt 3
     """
 
-    max_attempts = 3
+    max_retries = 3
 
-    for attempt in range(max_attempts):
+    for attempt in range(max_retries):
 
         try:
-            response = st.session_state.chat.send_message(parts)
 
-            if response and response.text:
-                return response.text
+            response = st.session_state.chat.send_message(
+                parts
+            )
 
-            return "Gemini returned an empty response."
+            if response is None:
+                return "Gemini returned an empty response."
+
+            if not response.text:
+                return "Gemini returned an empty response."
+
+            return response.text
 
         except Exception as error:
 
             error_text = str(error)
 
-            # Temporary Gemini capacity/service problem
-            if (
+            # --------------------------------------------
+            # Temporary Gemini server overload
+            # --------------------------------------------
+
+            is_503 = (
                 "503" in error_text
                 or "UNAVAILABLE" in error_text
                 or "high demand" in error_text.lower()
-            ):
+            )
 
-                if attempt < max_attempts - 1:
-                    # Wait before trying again
-                    time.sleep(3 * (attempt + 1))
+            # --------------------------------------------
+            # Rate limit / quota
+            # --------------------------------------------
+
+            is_429 = (
+                "429" in error_text
+                or "RESOURCE_EXHAUSTED" in error_text
+                or "quota" in error_text.lower()
+            )
+
+            # --------------------------------------------
+            # Retry temporary errors
+            # --------------------------------------------
+
+            if is_503 or is_429:
+
+                if attempt < max_retries - 1:
+
+                    wait_time = 2 ** attempt
+
+                    if is_503:
+                        st.info(
+                            f"Gemini is busy. "
+                            f"Retrying in {wait_time} seconds..."
+                        )
+
+                    elif is_429:
+                        st.info(
+                            f"Gemini rate limit reached. "
+                            f"Retrying in {wait_time} seconds..."
+                        )
+
+                    time.sleep(wait_time)
+
                     continue
 
-            return f"Sorry, something went wrong: {error_text}"
+                # ----------------------------------------
+                # All retries failed
+                # ----------------------------------------
 
-    return "Sorry, Gemini is temporarily unavailable. Please try again."
+                if is_503:
+
+                    return (
+                        "Gemini is currently experiencing "
+                        "high demand. Please try again in "
+                        "a few moments."
+                    )
+
+                if is_429:
+
+                    return (
+                        "Gemini API quota or rate limit "
+                        "has been reached. Please check "
+                        "your Gemini API usage and billing."
+                    )
+
+            # --------------------------------------------
+            # Other errors
+            # --------------------------------------------
+
+            return (
+                "Sorry, something went wrong while "
+                f"processing your request.\n\n"
+                f"Error: {error_text}"
+            )
+
+    return "Gemini is temporarily unavailable."
 
 
-# ---------------------------------------------------------
-# WhatsApp helpers
-# ---------------------------------------------------------
+# ============================================================
+# WHATSAPP TEXT CLEANING
+# ============================================================
 
 def clean_whatsapp_text(text):
+    """
+    Cleans Gemini's response before sending it to WhatsApp.
+
+    Twilio content templates have message-size limitations,
+    so we limit the summary to 1500 characters.
+    """
 
     if not text:
         return "No nutrition summary available."
 
-    # Remove newlines and excessive spaces
+    # Collapse newlines and excessive whitespace
     text = " ".join(text.split())
 
-    # Keep WhatsApp message reasonably sized
+    # Limit message length
     if len(text) > 1500:
         return text[:1500] + "..."
 
     return text
 
 
+# ============================================================
+# SEND WHATSAPP
+# ============================================================
+
 def send_whatsapp(to_number, user_name, summary):
+    """
+    Sends the daily nutrition summary through Twilio WhatsApp.
+    """
 
     try:
-
-        # Remove accidental whitespace
-        to_number = to_number.strip()
-
-        # Prevent users from entering "whatsapp:" twice
-        if to_number.startswith("whatsapp:"):
-            to_number = to_number.replace("whatsapp:", "", 1)
-
-        # Ensure country-code format
-        if not to_number.startswith("+"):
-            return (
-                False,
-                "Please enter your WhatsApp number with country code, "
-                "for example +919876543210.",
-            )
 
         content_variables = json.dumps(
             {
@@ -192,9 +320,17 @@ def send_whatsapp(to_number, user_name, summary):
         return False, str(error)
 
 
-# ---------------------------------------------------------
-# Step 1: Onboarding
-# ---------------------------------------------------------
+# ============================================================
+# INITIALIZE SESSION STATE
+# ============================================================
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+
+# ============================================================
+# STEP 1 — ONBOARDING
+# ============================================================
 
 if "onboarded" not in st.session_state:
 
@@ -214,8 +350,8 @@ if "onboarded" not in st.session_state:
             "WhatsApp number (with country code)",
             placeholder="+91XXXXXXXXXX",
             help=(
-                "Enter your number with country code. "
-                "Example: +919876543210"
+                "This is the number MacroSnap will "
+                "text your summary to."
             ),
         )
 
@@ -223,22 +359,31 @@ if "onboarded" not in st.session_state:
             "Let's go 🚀"
         )
 
+    # ========================================================
+    # FORM SUBMISSION
+    # ========================================================
+
     if submitted:
 
-        if not name.strip() or not whatsapp_number.strip():
+        # --------------------------------------------
+        # Validate input
+        # --------------------------------------------
+
+        if (
+            not name.strip()
+            or not whatsapp_number.strip()
+        ):
 
             st.warning(
-                "Please fill in both your name and WhatsApp number."
-            )
-
-        elif not whatsapp_number.strip().startswith("+"):
-
-            st.warning(
-                "Please enter your WhatsApp number with country code, "
-                "for example +919876543210."
+                "Please fill in both your name "
+                "and WhatsApp number."
             )
 
         else:
+
+            # ----------------------------------------
+            # Save user information
+            # ----------------------------------------
 
             st.session_state.name = name.strip()
 
@@ -246,26 +391,45 @@ if "onboarded" not in st.session_state:
                 whatsapp_number.strip()
             )
 
-            # Create Gemini chat
-            st.session_state.chat = gemini_client.chats.create(
-                model=MODEL_NAME,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT
-                ),
-            )
+            # ----------------------------------------
+            # Create Gemini conversation
+            # ----------------------------------------
+
+            try:
+
+                st.session_state.chat = (
+                    create_gemini_chat()
+                )
+
+            except Exception as error:
+
+                st.error(
+                    "Unable to initialize Gemini.\n\n"
+                    f"{error}"
+                )
+
+                st.stop()
+
+            # ----------------------------------------
+            # Initialize chat
+            # ----------------------------------------
 
             st.session_state.messages = []
 
             st.session_state.onboarded = True
+
+            # ----------------------------------------
+            # Rerun application
+            # ----------------------------------------
 
             st.rerun()
 
     st.stop()
 
 
-# ---------------------------------------------------------
-# Step 2: Chat interface
-# ---------------------------------------------------------
+# ============================================================
+# STEP 2 — MAIN CHAT INTERFACE
+# ============================================================
 
 header_col, button_col = st.columns(
     [5, 2],
@@ -273,24 +437,27 @@ header_col, button_col = st.columns(
 )
 
 
-# ---------------------------------------------------------
-# Header
-# ---------------------------------------------------------
+# ============================================================
+# HEADER
+# ============================================================
 
 with header_col:
 
     st.title("🥗 MacroSnap")
 
 
-# ---------------------------------------------------------
-# WhatsApp button
-# ---------------------------------------------------------
+# ============================================================
+# WHATSAPP BUTTON
+# ============================================================
 
 with button_col:
 
-    # Enable the button once the user has interacted
-    # with Gemini at least once.
-    send_disabled = len(st.session_state.messages) < 3
+    # Require at least some conversation before
+    # allowing daily summary.
+
+    send_disabled = (
+        len(st.session_state.messages) < 3
+    )
 
     if st.button(
         "📤 Send to WhatsApp",
@@ -303,13 +470,25 @@ with button_col:
         ):
 
             summary = ask_gemini(
-                [SUMMARY_REQUEST_PROMPT]
+                [
+                    SUMMARY_REQUEST_PROMPT
+                ]
             )
 
-        # Don't send an error message to WhatsApp
-        # if Gemini itself failed.
-        if summary.startswith(
-            "Sorry, something went wrong:"
+        # --------------------------------------------
+        # Don't send an obvious Gemini error to WhatsApp
+        # --------------------------------------------
+
+        if (
+            summary.startswith(
+                "Gemini is currently experiencing"
+            )
+            or summary.startswith(
+                "Gemini API quota"
+            )
+            or summary.startswith(
+                "Sorry, something went wrong"
+            )
         ):
 
             st.error(summary)
@@ -335,19 +514,21 @@ with button_col:
                 )
 
 
-# ---------------------------------------------------------
-# User information
-# ---------------------------------------------------------
+# ============================================================
+# USER INFORMATION
+# ============================================================
 
 st.caption(
-    f"Logged in as {st.session_state.name} "
-    f"- updates go to {st.session_state.whatsapp_number}"
+    f"Logged in as "
+    f"{st.session_state.name} "
+    f"- updates go to "
+    f"{st.session_state.whatsapp_number}"
 )
 
 
-# ---------------------------------------------------------
-# Display previous messages
-# ---------------------------------------------------------
+# ============================================================
+# WELCOME MESSAGE
+# ============================================================
 
 if not st.session_state.messages:
 
@@ -361,14 +542,15 @@ if not st.session_state.messages:
 
 else:
 
+    # Render existing conversation
     for message in st.session_state.messages:
 
         render_message(message)
 
 
-# ---------------------------------------------------------
-# Chat input
-# ---------------------------------------------------------
+# ============================================================
+# CHAT INPUT
+# ============================================================
 
 user_input = st.chat_input(
     "Ask a question, or attach a photo of your meal",
@@ -381,9 +563,9 @@ user_input = st.chat_input(
 )
 
 
-# ---------------------------------------------------------
-# Process user input
-# ---------------------------------------------------------
+# ============================================================
+# PROCESS USER MESSAGE
+# ============================================================
 
 if user_input:
 
@@ -398,19 +580,27 @@ if user_input:
     parts = []
 
 
-    # -----------------------------------------------------
-    # Image input
-    # -----------------------------------------------------
+    # ========================================================
+    # PROCESS IMAGE
+    # ========================================================
 
     if photo is not None:
 
         photo_bytes = photo.getvalue()
+
+        # --------------------------------------------
+        # Display uploaded image
+        # --------------------------------------------
 
         add_message(
             "user",
             "image",
             photo_bytes,
         )
+
+        # --------------------------------------------
+        # Convert image into Gemini Part
+        # --------------------------------------------
 
         parts.append(
             types.Part.from_bytes(
@@ -420,9 +610,9 @@ if user_input:
         )
 
 
-    # -----------------------------------------------------
-    # Text input
-    # -----------------------------------------------------
+    # ========================================================
+    # PROCESS TEXT
+    # ========================================================
 
     if text:
 
@@ -434,26 +624,37 @@ if user_input:
 
         parts.append(text)
 
+
+    # ========================================================
+    # IMAGE ONLY MESSAGE
+    # ========================================================
+
     elif photo is not None:
 
         parts.append(
             "What is this meal? "
-            "Give me the estimated calories, "
-            "protein, carbohydrates, and fat."
+            "Identify the food and estimate "
+            "the calories, protein, carbohydrates, "
+            "and fat."
         )
 
 
-    # -----------------------------------------------------
-    # Gemini response
-    # -----------------------------------------------------
+    # ========================================================
+    # SEND TO GEMINI
+    # ========================================================
 
     if parts:
 
         with st.spinner(
-            "Crunching the numbers..."
+            "🥗 Crunching the numbers..."
         ):
 
             answer = ask_gemini(parts)
+
+
+        # ====================================================
+        # DISPLAY GEMINI RESPONSE
+        # ====================================================
 
         add_message(
             "assistant",
