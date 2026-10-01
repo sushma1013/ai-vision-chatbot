@@ -12,7 +12,7 @@ st.set_page_config(page_title="MacroSnap", page_icon="🥗")
 
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 
-st.write("Gemini key loaded:", bool(GEMINI_API_KEY))
+
 MODEL_NAME = "gemini-3.5-flash"
 
 
