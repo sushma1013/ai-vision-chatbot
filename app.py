@@ -8,7 +8,7 @@ from twilio.rest import Client as TwilioClient
 from prompts import SUMMARY_REQUEST_PROMPT, SYSTEM_PROMPT, WELCOME_MESSAGE_TEMPLATE
 st.set_page_config(page_title="MacroSnap", page_icon="🥗")
 
-st.write("Available secrets:", list(st.secrets.keys()))
+
 
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 
