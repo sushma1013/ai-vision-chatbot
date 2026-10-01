@@ -428,6 +428,52 @@ if "current_model_index" not in st.session_state:
 
 if "current_model" not in st.session_state:
     st.session_state.current_model = GEMINI_MODELS[0]
+# ============================================================
+# MESSAGE RENDERING
+# ============================================================
+
+def render_message(message):
+    """
+    Render a single chat message.
+    """
+
+    with st.chat_message(message["role"]):
+
+        if message["kind"] == "text":
+
+            st.write(
+                message["content"]
+            )
+
+        elif message["kind"] == "image":
+
+            st.image(
+                message["content"],
+                use_container_width=True,
+            )
+
+
+# ============================================================
+# ADD MESSAGE
+# ============================================================
+
+def add_message(role, kind, content):
+    """
+    Add a message to Streamlit session state
+    and render it immediately.
+    """
+
+    st.session_state.messages.append(
+        {
+            "role": role,
+            "kind": kind,
+            "content": content,
+        }
+    )
+
+    render_message(
+        st.session_state.messages[-1]
+    )
 
 
 # ============================================================
