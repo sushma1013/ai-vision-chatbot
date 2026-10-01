@@ -337,10 +337,7 @@ def ask_gemini(parts):
 
             new_model = st.session_state.current_model
 
-            st.warning(
-                f"⚠️ Switching Gemini model: "
-                f"{previous_model} → {new_model}"
-            )
+            
 
             continue
 
@@ -385,70 +382,37 @@ def clean_whatsapp_text(text):
 # ============================================================
 
 # ============================================================
-# WHATSAPP BUTTON
+# SEND WHATSAPP
 # ============================================================
-has_user_messages = any(
-    message["role"] == "user"
-    for message in st.session_state.messages
-)
 
-with button_col:
+def send_whatsapp(to_number, user_name, summary):
+    """
+    Sends the nutrition summary to the user's WhatsApp
+    using the Twilio Content Template.
+    """
 
-    if st.button(
-        "📤 Send to WhatsApp",
-        disabled=not has_user_messages,
-        use_container_width=True,
-    ):
+    try:
 
-        with st.spinner(
-            "📱 Creating your nutrition summary..."
-        ):
+        content_variables = json.dumps(
+            {
+                "1": user_name,
+                "2": clean_whatsapp_text(summary),
+            },
+            ensure_ascii=False,
+        )
 
-            summary = ask_gemini(
-                [SUMMARY_REQUEST_PROMPT]
-            )
+        message = twilio_client.messages.create(
+            from_=TWILIO_WHATSAPP_FROM,
+            to=f"whatsapp:{to_number}",
+            content_sid=TWILIO_CONTENT_SID,
+            content_variables=content_variables,
+        )
 
-        # ----------------------------------------------------
-        # Check whether Gemini returned an error
-        # ----------------------------------------------------
+        return True, message.sid
 
-        if (
-            summary.startswith("❌")
-            or summary.startswith("Gemini is")
-            or summary.startswith("Sorry")
-        ):
+    except Exception as error:
 
-            st.error(summary)
-
-        else:
-
-            with st.spinner(
-                "📲 Sending to WhatsApp..."
-            ):
-
-                success, info = send_whatsapp(
-                    st.session_state.whatsapp_number,
-                    st.session_state.name,
-                    summary,
-                )
-
-            if success:
-
-                st.success(
-                    "✅ Sent successfully! "
-                    "Check your WhatsApp 📲"
-                )
-
-                # Optional: display the Twilio message ID
-                st.caption(
-                    f"Message ID: {info}"
-                )
-
-            else:
-
-                st.error(
-                    f"❌ WhatsApp message failed:\n\n{info}"
-                )
+        return False, str(error)
 
 
 # ============================================================
@@ -641,28 +605,76 @@ with header_col:
 # WHATSAPP BUTTON
 # ============================================================
 
-with button_col:
+# ============================================================
+# WHATSAPP BUTTON
+# ============================================================
 
-    send_disabled = (
-        len(st.session_state.messages) < 3
-    )
+has_user_message = any(
+    message.get("role") == "user"
+    for message in st.session_state.messages
+)
+
+with button_col:
 
     if st.button(
         "📤 Send to WhatsApp",
-        disabled=send_disabled,
+        disabled=not has_user_message,
         use_container_width=True,
     ):
 
         with st.spinner(
-            "Summarizing your day..."
+            "📱 Creating your nutrition summary..."
         ):
 
             summary = ask_gemini(
-                [
-                    SUMMARY_REQUEST_PROMPT
-                ]
+                [SUMMARY_REQUEST_PROMPT]
             )
 
+        # --------------------------------------------
+        # Check Gemini response
+        # --------------------------------------------
+
+        if (
+            not summary
+            or summary.startswith("❌")
+            or summary.startswith("Gemini is")
+            or summary.startswith("Sorry")
+        ):
+
+            st.error(
+                summary or "Gemini returned no summary."
+            )
+
+        else:
+
+            with st.spinner(
+                "📲 Sending to WhatsApp..."
+            ):
+
+                success, info = send_whatsapp(
+                    st.session_state.whatsapp_number,
+                    st.session_state.name,
+                    summary,
+                )
+
+            if success:
+
+                st.success(
+                    "✅ Sent successfully! "
+                    "Check your WhatsApp 📲"
+                )
+
+                st.caption(
+                    f"Twilio Message ID: {info}"
+                )
+
+            else:
+
+                st.error(
+                    "❌ WhatsApp sending failed."
+                )
+
+                st.code(str(info))
 
         # ====================================================
         # CHECK GEMINI ERROR
