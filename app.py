@@ -115,7 +115,7 @@ with header_col:
     st.title("🥗 MacroSnap")
  
 with button_col:
-    send_disabled = len(st.session_state.messages) <= 2
+    send_disabled = len(st.session_state.messages) < 3
     if st.button("📤 Send to WhatsApp", disabled=send_disabled, use_container_width=True):
         with st.spinner("Summarizing your day..."):
             summary = ask_gemini([SUMMARY_REQUEST_PROMPT])
