@@ -384,34 +384,71 @@ def clean_whatsapp_text(text):
 # SEND WHATSAPP
 # ============================================================
 
-def send_whatsapp(
-    to_number,
-    user_name,
-    summary,
-):
+# ============================================================
+# WHATSAPP BUTTON
+# ============================================================
+has_user_messages = any(
+    message["role"] == "user"
+    for message in st.session_state.messages
+)
 
-    try:
+with button_col:
 
-        content_variables = json.dumps(
-            {
-                "1": user_name,
-                "2": clean_whatsapp_text(summary),
-            },
-            ensure_ascii=False,
-        )
+    if st.button(
+        "📤 Send to WhatsApp",
+        disabled=not has_user_messages,
+        use_container_width=True,
+    ):
 
-        message = twilio_client.messages.create(
-            from_=TWILIO_WHATSAPP_FROM,
-            to=f"whatsapp:{to_number}",
-            content_sid=TWILIO_CONTENT_SID,
-            content_variables=content_variables,
-        )
+        with st.spinner(
+            "📱 Creating your nutrition summary..."
+        ):
 
-        return True, message.sid
+            summary = ask_gemini(
+                [SUMMARY_REQUEST_PROMPT]
+            )
 
-    except Exception as error:
+        # ----------------------------------------------------
+        # Check whether Gemini returned an error
+        # ----------------------------------------------------
 
-        return False, str(error)
+        if (
+            summary.startswith("❌")
+            or summary.startswith("Gemini is")
+            or summary.startswith("Sorry")
+        ):
+
+            st.error(summary)
+
+        else:
+
+            with st.spinner(
+                "📲 Sending to WhatsApp..."
+            ):
+
+                success, info = send_whatsapp(
+                    st.session_state.whatsapp_number,
+                    st.session_state.name,
+                    summary,
+                )
+
+            if success:
+
+                st.success(
+                    "✅ Sent successfully! "
+                    "Check your WhatsApp 📲"
+                )
+
+                # Optional: display the Twilio message ID
+                st.caption(
+                    f"Message ID: {info}"
+                )
+
+            else:
+
+                st.error(
+                    f"❌ WhatsApp message failed:\n\n{info}"
+                )
 
 
 # ============================================================
@@ -456,7 +493,6 @@ def render_message(message):
 # ============================================================
 # ADD MESSAGE
 # ============================================================
-
 def add_message(role, kind, content):
     """
     Add a message to Streamlit session state
